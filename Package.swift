@@ -3,8 +3,10 @@ import PackageDescription
 
 let package = Package(
     name: "MusicboxCore",
-    // No platform pin: this package is Foundation-only and must keep building
-    // and testing on Linux CI as well as macOS/iOS toolchains.
+    // Deployment targets for Apple platforms so async/await (iOS 13+) is
+    // available when the iOS app links this package. Ignored on Linux, so
+    // `swift test` on Linux CI is unaffected.
+    platforms: [.iOS(.v16), .macOS(.v13)],
     products: [
         .library(
             name: "MusicboxCore",
