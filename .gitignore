@@ -1,0 +1,6 @@
+.build/
+*.xcodeproj
+.DS_Store
+.swiftpm/
+# xcodebuild archive/export output (testflight.yml -> build/*.xcarchive, build/export/*.ipa)
+build/

@@ -1,0 +1,110 @@
+# XcodeGen manifest for the Musicbox iOS app.
+#
+# Regenerate the Xcode project with:
+#     xcodegen generate && open Musicbox.xcodeproj
+#
+# The app target depends on the local, path-based `MusicboxCore` SwiftPM
+# package (the same package that `swift build`/`swift test` uses on Linux).
+#
+# Bundle id, team, and signing are placeholders here — no real Apple team is
+# hardcoded. ios.yml (Simulator build, every push) doesn't need any of that
+# and keeps working unsigned. Setting up a real device / TestFlight build is
+# a one-time manual step: see APPLE_SETUP.md.
+name: Musicbox
+
+options:
+  bundleIdPrefix: com.musicbox
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+# Path-based local package: Package.swift lives at the repo root next to this
+# manifest and vends the `MusicboxCore` library product.
+packages:
+  MusicboxCore:
+    path: .
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    # iOS 16.0 so it runs on the iPhone 12.
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    MARKETING_VERSION: "1.0"
+    # Apple requires a unique build number per TestFlight upload. This is the
+    # local/default value; testflight.yml overrides it per-run with
+    # CURRENT_PROJECT_VERSION=${{ github.run_number }} so every CI build gets
+    # a fresh number automatically. See APPLE_SETUP.md.
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  Musicbox:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: App
+    dependencies:
+      - package: MusicboxCore
+        product: MusicboxCore
+    settings:
+      base:
+        # --- Bundle identifier ----------------------------------------------
+        # PLACEHOLDER. Replace with an identifier you own, e.g.
+        # com.<yourname>.musicbox, then register it as an App ID in the Apple
+        # Developer portal (Certificates, Identifiers & Profiles -> Identifiers)
+        # and as an app record in App Store Connect. Keep this in sync with the
+        # GitHub Actions repo *variable* APP_BUNDLE_ID: testflight.yml passes
+        # PRODUCT_BUNDLE_IDENTIFIER=${{ vars.APP_BUNDLE_ID }} on the command
+        # line, which overrides whatever is set here for that build. See
+        # APPLE_SETUP.md.
+        PRODUCT_BUNDLE_IDENTIFIER: com.yourname.musicbox
+        # 1 == iPhone only.
+        TARGETED_DEVICE_FAMILY: 1
+        SWIFT_VERSION: "6.0"
+        # --- Code signing -----------------------------------------------------
+        # Automatic signing style: Xcode (locally) or `xcodebuild
+        # -allowProvisioningUpdates` (in testflight.yml, authenticated with an
+        # App Store Connect API key) creates/renews the certificate and
+        # provisioning profile for you. No manual certs/profiles to manage.
+        CODE_SIGN_STYLE: Automatic
+        # EMPTY placeholder — do NOT hardcode a real team here (this file is
+        # committed to the repo). Find your 10-character Team ID at
+        # developer.apple.com -> Membership (see APPLE_SETUP.md) and either
+        # fill it in below for local Xcode device builds, or leave it empty
+        # and let testflight.yml supply it at archive time via
+        # DEVELOPMENT_TEAM=${{ vars.APPLE_TEAM_ID }} (a GitHub Actions repo
+        # *variable*, not a secret — team IDs aren't sensitive).
+        DEVELOPMENT_TEAM: ""
+        # The Simulator build in ios.yml needs no team at all: it passes
+        # CODE_SIGNING_ALLOWED=NO on its xcodebuild command line, which
+        # disables signing outright regardless of the two settings above —
+        # command-line build settings always win over these project defaults.
+    # XcodeGen writes App/Info.plist from these properties at generate time.
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Musicbox
+        # Tied to the build settings above so testflight.yml's
+        # CURRENT_PROJECT_VERSION=${{ github.run_number }} override actually
+        # lands in the .ipa (TestFlight rejects a repeated build number).
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        # Keep audio playing when the app is backgrounded / screen is locked.
+        UIBackgroundModes:
+          - audio
+        # The personal media server is reached over plain HTTP on the LAN or a
+        # Tailscale (100.x) address, so allow non-TLS loads. This is a personal
+        # single-user app; tighten to specific NSExceptionDomains once the
+        # server has a stable https origin.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        # Avoids the App Store "export compliance" prompt for a personal build.
+        ITSAppUsesNonExemptEncryption: false
+    # NOTE ON DATA PROTECTION: the library cache + downloaded media are written
+    # with .completeFileProtectionUntilFirstUserAuthentication in code (see
+    # LibraryStore / AudioPlayer) so they are encrypted at rest but still
+    # readable for background audio after the first unlock. If you prefer to
+    # enforce it target-wide instead, add the "Data Protection" capability and
+    # set it there.

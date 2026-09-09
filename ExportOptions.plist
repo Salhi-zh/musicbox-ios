@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Export options for `xcodebuild -exportArchive`, used by
+  .github/workflows/testflight.yml to turn the .xcarchive produced by
+  `xcodebuild archive` into a TestFlight-ready .ipa.
+
+  This file is committed with placeholder values. The workflow patches
+  `teamID` in place (via PlistBuddy) before exporting; nothing here needs to
+  be secret. See APPLE_SETUP.md.
+-->
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <!-- "app-store-connect" is the current method name for a TestFlight/App
+         Store export (Xcode 13+). Older Xcode versions and older
+         tutorials/docs use "app-store" for the same thing — if you're on an
+         Xcode version that rejects "app-store-connect", switch to that. -->
+    <string>app-store-connect</string>
+
+    <key>signingStyle</key>
+    <!-- Matches CODE_SIGN_STYLE: Automatic in project.yml and
+         -allowProvisioningUpdates in testflight.yml: xcodebuild manages the
+         distribution certificate and provisioning profile for you via the
+         App Store Connect API key, no manual profiles needed. -->
+    <string>automatic</string>
+
+    <key>destination</key>
+    <string>export</string>
+
+    <key>teamID</key>
+    <!-- PLACEHOLDER — overwritten in CI by testflight.yml:
+         /usr/libexec/PlistBuddy -c "Set :teamID $APPLE_TEAM_ID" ExportOptions.plist
+         (using the APPLE_TEAM_ID repo variable) right before -exportArchive
+         runs. Left as an obviously-fake value here, rather than blank, so a
+         manual `xcodebuild -exportArchive` run fails loudly instead of
+         silently exporting for the wrong team. If exporting locally on a
+         Mac, replace this with your real Team ID first (developer.apple.com
+         -> Membership; see APPLE_SETUP.md). -->
+    <string>REPLACE_WITH_APPLE_TEAM_ID</string>
+</dict>
+</plist>

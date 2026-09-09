@@ -1,0 +1,157 @@
+name: TestFlight
+
+# Deliberately NOT triggered by plain `push`/`pull_request` — that's
+# ios.yml's job, and it must stay green with zero Apple secrets configured.
+# This workflow only runs when you ask for it:
+#   - the "Run workflow" button in the Actions tab (workflow_dispatch), or
+#   - pushing a version tag, e.g. `git tag v0.1.0 && git push origin v0.1.0`
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+
+# Don't cancel an in-flight TestFlight upload if the same tag is re-pushed;
+# let it finish (or fail) on its own.
+concurrency:
+  group: testflight-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Archive + upload to TestFlight
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Fail fast and loud with a clear message, before burning 10-15 minutes
+      # of macOS runner time on an archive that can't be signed or uploaded.
+      # Secrets hold key material; vars hold non-sensitive config (team id,
+      # bundle id) — see APPLE_SETUP.md for where each of these comes from.
+      - name: Guard - required secrets and variables
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APP_BUNDLE_ID: ${{ vars.APP_BUNDLE_ID }}
+        run: |
+          set -u
+          missing=()
+          [ -z "$ASC_KEY_ID" ]        && missing+=("secrets.ASC_KEY_ID")
+          [ -z "$ASC_ISSUER_ID" ]     && missing+=("secrets.ASC_ISSUER_ID")
+          [ -z "$ASC_KEY_P8_BASE64" ] && missing+=("secrets.ASC_KEY_P8_BASE64")
+          [ -z "$APPLE_TEAM_ID" ]     && missing+=("vars.APPLE_TEAM_ID")
+          [ -z "$APP_BUNDLE_ID" ]     && missing+=("vars.APP_BUNDLE_ID")
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::Missing required GitHub Actions config: ${missing[*]}"
+            echo "Set secrets/variables under Settings -> Secrets and variables -> Actions."
+            echo "Full walkthrough: APPLE_SETUP.md"
+            exit 1
+          fi
+          echo "OK: all required secrets/variables are set."
+
+      - name: Select latest Xcode
+        run: |
+          latest=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          echo "Using $latest"
+          sudo xcode-select -s "$latest"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      # --- App Store Connect API key -----------------------------------
+      # xcodebuild/altool auto-discover a key placed at
+      # ~/.appstoreconnect/private_keys/AuthKey_<KEYID>.p8. We also pass
+      # -authenticationKeyPath explicitly on every command below, so this
+      # works even if that auto-discovery convention ever changes.
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$ASC_KEY_P8_BASE64" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_"$ASC_KEY_ID".p8
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_"$ASC_KEY_ID".p8
+
+      # Automatic signing (CODE_SIGN_STYLE: Automatic in project.yml) +
+      # -allowProvisioningUpdates lets xcodebuild create/renew the
+      # distribution certificate and provisioning profile itself via the API
+      # key, authenticated the same way for every xcodebuild/altool call
+      # below. DEVELOPMENT_TEAM / PRODUCT_BUNDLE_IDENTIFIER here override the
+      # placeholders committed in project.yml. CURRENT_PROJECT_VERSION is set
+      # to the CI run number so every upload gets a unique build number
+      # (TestFlight rejects a repeat) — see APPLE_SETUP.md troubleshooting.
+      - name: Archive
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APP_BUNDLE_ID: ${{ vars.APP_BUNDLE_ID }}
+        run: |
+          xcodebuild archive \
+            -project Musicbox.xcodeproj \
+            -scheme Musicbox \
+            -configuration Release \
+            -archivePath build/Musicbox.xcarchive \
+            -destination 'generic/platform=iOS' \
+            -allowProvisioningUpdates \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PRODUCT_BUNDLE_IDENTIFIER="$APP_BUNDLE_ID" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
+
+      # ExportOptions.plist ships with a placeholder teamID (it's committed
+      # to the repo, and the team id isn't secret); fill in the real one for
+      # this run.
+      - name: Set Team ID in ExportOptions.plist
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: /usr/libexec/PlistBuddy -c "Set :teamID $APPLE_TEAM_ID" ExportOptions.plist
+
+      - name: Export .ipa
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath build/Musicbox.xcarchive \
+            -exportPath build/export \
+            -exportOptionsPlist ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
+
+      - name: Upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          ipa=$(ls build/export/*.ipa | head -n1)
+          echo "Uploading $ipa"
+          xcrun altool --upload-app \
+            -f "$ipa" \
+            --type ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
