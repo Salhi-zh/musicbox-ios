@@ -47,14 +47,33 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      # Build the iOS app for the Simulator (unsigned). This is the first place
-      # the SwiftUI/AVFoundation app code is actually compiled.
-      - name: Build app for iOS Simulator
+      # Build the app for a real iOS device, UNSIGNED. This both compiles the
+      # SwiftUI/AVFoundation code (the compile gate) and produces the .app that
+      # SideStore will re-sign with your free Apple ID on install.
+      - name: Build unsigned iOS device app
         run: |
           xcodebuild \
             -project Musicbox.xcodeproj \
             -scheme Musicbox \
-            -destination 'generic/platform=iOS Simulator' \
             -configuration Debug \
-            CODE_SIGNING_ALLOWED=NO \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build
+
+      # Package the unsigned .app into a Payload/*.ipa that SideStore accepts.
+      - name: Package unsigned .ipa
+        run: |
+          APP="build/Build/Products/Debug-iphoneos/Musicbox.app"
+          if [ ! -d "$APP" ]; then echo "app bundle not found at $APP"; ls -R build/Build/Products || true; exit 1; fi
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry Musicbox-unsigned.ipa Payload
+          ls -la Musicbox-unsigned.ipa
+
+      - name: Upload unsigned .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Musicbox-unsigned-ipa
+          path: Musicbox-unsigned.ipa
+          if-no-files-found: error
