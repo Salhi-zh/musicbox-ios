@@ -54,7 +54,7 @@ jobs:
           xcodebuild \
             -project Musicbox.xcodeproj \
             -scheme Musicbox \
-            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -destination 'generic/platform=iOS Simulator' \
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO \
             build
