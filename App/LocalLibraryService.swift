@@ -88,19 +88,26 @@ final class LocalLibraryService: ObservableObject {
         )
         var seen = Set<String>()
 
+        // Gather file URLs synchronously first — iterating a DirectoryEnumerator
+        // with for-in is unavailable in an async context, so use nextObject().
+        var fileURLs: [URL] = []
         if let en = fm.enumerator(
             at: musicDir,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) {
-            for case let url as URL in en {
-                guard Self.audioExtensions.contains(url.pathExtension.lowercased()) else { continue }
-                let rel = relativePath(of: url)
-                seen.insert(rel)
-                if byPath[rel] != nil { continue }               // already indexed
-                if let entry = await makeEntry(for: url, relativePath: rel) {
-                    byPath[rel] = entry
+            while let url = en.nextObject() as? URL {
+                if Self.audioExtensions.contains(url.pathExtension.lowercased()) {
+                    fileURLs.append(url)
                 }
+            }
+        }
+        for url in fileURLs {
+            let rel = relativePath(of: url)
+            seen.insert(rel)
+            if byPath[rel] != nil { continue }               // already indexed
+            if let entry = await makeEntry(for: url, relativePath: rel) {
+                byPath[rel] = entry
             }
         }
 
