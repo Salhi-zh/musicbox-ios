@@ -6,21 +6,14 @@ import MusicboxCore
 
 /// A MINIMAL single-track player built on `AVAudioEngine` + `AVAudioPlayerNode`.
 ///
-/// It downloads `GET /v1/media/{uuid}` to a cache file and plays it via
-/// `AVAudioFile`. This is intentionally the simplest thing that plays one
-/// track: no gapless, no crossfade, no ReplayGain DSP, no queue advance.
+/// It plays a LOCAL file (resolved from `LocalLibraryService`) via `AVAudioFile`.
+/// This is intentionally the simplest thing that plays one track: no gapless,
+/// no crossfade, no ReplayGain DSP, no queue advance.
 ///
-/// FUTURE (the real engine): replace the internals of `play(_:)` /
-/// `mediaFileURL(for:)` with a libopus-backed decoder feeding a PCM ring
-/// buffer that schedules buffers on the player node, giving gapless playback,
-/// crossfade, and ReplayGain gain application. The UI depends ONLY on the
-/// published `currentTrack` / `isPlaying` and the `play/toggle` API below, so
-/// that swap won't touch any view.
-///
-/// OPUS NOTE: the server serves Ogg/Opus. `AVAudioFile` decodes Opus on recent
-/// iOS, but this is NOT guaranteed across all versions/containers — if a file
-/// fails to open, that surfaces as a play error here and is exactly the case
-/// the libopus engine above will own. This minimal player is the fallback.
+/// FUTURE (the real engine): replace the internals of `play(_:)` with a decoder
+/// feeding a PCM ring buffer that schedules buffers on the player node, giving
+/// gapless playback, crossfade, and ReplayGain. The UI depends ONLY on the
+/// published `currentTrack` / `isPlaying` and the `play/toggle` API below.
 @MainActor
 final class AudioPlayer: ObservableObject {
     @Published private(set) var currentTrack: Track?
@@ -29,35 +22,24 @@ final class AudioPlayer: ObservableObject {
 
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
-    private let settings: SettingsStore
-    private let session: URLSession
+    private let library: LocalLibraryService
 
     private var didConfigureSession = false
     private var didConfigureRemoteCommands = false
-    private let mediaCacheDir: URL
     /// Retained for the lifetime of playback: `scheduleFile` reads from this
     /// lazily during rendering, so it must outlive `play(_:)`.
     private var currentFile: AVAudioFile?
 
-    init(settings: SettingsStore, session: URLSession = .shared) {
-        self.settings = settings
-        self.session = session
-
-        let caches = (try? FileManager.default.url(
-            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-        )) ?? FileManager.default.temporaryDirectory
-        let dir = caches.appendingPathComponent("MusicboxMedia", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        self.mediaCacheDir = dir
-
+    init(library: LocalLibraryService) {
+        self.library = library
         engine.attach(playerNode)
     }
 
     // MARK: Playback
 
     func play(_ track: Track) async {
-        guard let config = settings.config else {
-            lastError = "Set the server URL and token in Settings first."
+        guard let fileURL = library.fileURL(for: track.uuid) else {
+            lastError = "File not found for “\(track.title)”. Try Rescan."
             return
         }
         configureSessionIfNeeded()
@@ -65,18 +47,15 @@ final class AudioPlayer: ObservableObject {
         lastError = nil
 
         do {
-            let fileURL = try await mediaFileURL(for: track, config: config)
             let file = try AVAudioFile(forReading: fileURL)
 
             if playerNode.isPlaying { playerNode.stop() }
-            // (Re)connect with this file's processing format.
             engine.connect(playerNode, to: engine.mainMixerNode, format: file.processingFormat)
             if !engine.isRunning { try engine.start() }
 
             currentFile = file
             currentTrack = track
             playerNode.scheduleFile(file, at: nil) { [weak self] in
-                // Completion fires on an internal AVAudioEngine thread; hop back.
                 Task { @MainActor in self?.handlePlaybackFinished() }
             }
             playerNode.play()
@@ -109,34 +88,7 @@ final class AudioPlayer: ObservableObject {
 
     private func handlePlaybackFinished() {
         isPlaying = false
-        // FUTURE: ask the PlayQueue for the next track and continue playback
-        // (this is where gapless scheduling of the next file will hook in).
-    }
-
-    // MARK: Media fetch (download-to-file fallback)
-
-    private func mediaFileURL(for track: Track, config: ServerConfig) async throws -> URL {
-        let destination = mediaCacheDir.appendingPathComponent(track.uuid.uuidString, isDirectory: false)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            return destination
-        }
-        guard let request = MusicboxAPI.mediaRequest(for: track.uuid, config: config) else {
-            throw URLError(.badURL)
-        }
-        // FUTURE: stream with HTTP Range + ETag(sha256) validation instead of a
-        // full download; the real engine will pull ranges into its ring buffer.
-        let (tempURL, response) = try await session.download(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw URLError(.badServerResponse)
-        }
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: tempURL, to: destination)
-        // Encrypted at rest but readable for background playback after first unlock.
-        try? (destination as NSURL).setResourceValue(
-            URLFileProtection.completeUntilFirstUserAuthentication,
-            forKey: .fileProtectionKey
-        )
-        return destination
+        // FUTURE: ask the PlayQueue for the next track and continue playback.
     }
 
     // MARK: AVAudioSession

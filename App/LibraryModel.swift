@@ -59,16 +59,14 @@ struct TrackRow: Identifiable, Equatable {
     let track: Track
 }
 
-/// Owns the synced library and turns it into rows for the UI. All search and
-/// sorting delegate to `MusicboxCore` (`SearchIndex` / `SortEngine`); this
-/// class only orchestrates and formats.
+/// Turns the on-device library into rows for the UI. Search and sorting delegate
+/// to `MusicboxCore` (`SearchIndex` / `SortEngine`); this class only orchestrates
+/// and formats. It observes `LocalLibraryService.tracks` and recomputes on change.
 @MainActor
 final class LibraryModel: ObservableObject {
-    /// The full library, sorted by `sort`. The Library tab renders this.
     @Published private(set) var rows: [TrackRow] = []
-    @Published private(set) var rev: Int = 0
     @Published private(set) var trackCount: Int = 0
-    @Published private(set) var isSyncing = false
+    @Published private(set) var isScanning = false
     @Published var lastMessage: String?
 
     /// Bound to the Library sort menu.
@@ -79,62 +77,46 @@ final class LibraryModel: ObservableObject {
     private var allTracks: [Track] = []
     private var index: SearchIndex?
 
-    private let store: LibraryStore?
-    private let sync: SyncService
-    private let settings: SettingsStore
+    private let service: LocalLibraryService
 
-    init(settings: SettingsStore, sync: SyncService) {
-        self.settings = settings
-        self.sync = sync
-        self.store = try? LibraryStore()
-
-        let snapshot = store?.load() ?? .empty
-        apply(tracks: snapshot.tracks, rev: snapshot.rev)
+    init(service: LocalLibraryService) {
+        self.service = service
+        // Show whatever the persisted index loaded immediately.
+        apply(tracks: service.tracks)
         recompute()
     }
 
-    // MARK: Sync
+    // MARK: Library management
 
-    func syncNow() async {
-        guard let config = settings.config else {
-            lastMessage = "Set the server URL and token in Settings first."
-            return
-        }
-        guard !isSyncing else { return }
-        isSyncing = true
-        lastMessage = nil
-        defer { isSyncing = false }
+    /// Rescan the Musicbox folder (picks up files dragged in via the Files app).
+    func rescan() async {
+        isScanning = true
+        await service.scan()
+        apply(tracks: service.tracks)
+        recompute()
+        isScanning = false
+        lastMessage = "\(trackCount) songs."
+    }
 
-        await sync.updateConfig(config)
-
-        var state = SyncState(
-            tracksByUUID: Dictionary(allTracks.map { ($0.uuid, $0) }, uniquingKeysWith: { _, new in new }),
-            rev: rev
-        )
-        do {
-            try await SyncClient.syncAll(&state, transport: sync)
-            apply(tracks: state.tracks, rev: state.rev)
-            recompute()
-            try store?.save(LibrarySnapshot(rev: rev, tracks: allTracks))
-            lastMessage = "Synced \(trackCount) tracks (rev \(rev))."
-        } catch {
-            lastMessage = "Sync failed: \(error.localizedDescription)"
-        }
+    /// Import files chosen with the in-app document picker.
+    func importFiles(_ urls: [URL]) async {
+        isScanning = true
+        await service.importFiles(urls)
+        apply(tracks: service.tracks)
+        recompute()
+        isScanning = false
+        lastMessage = "Imported. \(trackCount) songs."
     }
 
     // MARK: Query -> rows
 
-    /// Rebuild the full sorted `rows` (Library tab). Cheap for a few hundred
-    /// tracks, so it's fine to call on every sort change.
+    /// Rebuild the full sorted `rows`. Cheap for a few hundred tracks.
     func recompute() {
         let sorted = SortEngine.sorted(allTracks, by: sort.descriptors)
         rows = sorted.map(Self.row(for:))
     }
 
-    /// Pure search used by the Search tab: runs the query through
-    /// `SearchIndex` (relevance-ranked) and returns render-ready rows WITHOUT
-    /// mutating the shared `rows`. An empty query returns nothing (the Search
-    /// tab shows a prompt instead of the whole library).
+    /// Pure search for the Search tab; does not mutate `rows`.
     func results(for query: String) -> [TrackRow] {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, let index else { return [] }
@@ -143,11 +125,9 @@ final class LibraryModel: ObservableObject {
 
     // MARK: Internals
 
-    private func apply(tracks: [Track], rev: Int) {
+    private func apply(tracks: [Track]) {
         allTracks = tracks
-        self.rev = rev
         trackCount = tracks.count
-        // Rebuild the search index whenever the underlying set changes.
         index = SearchIndex(tracks: tracks)
     }
 

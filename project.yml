@@ -93,18 +93,21 @@ targets:
         # Keep audio playing when the app is backgrounded / screen is locked.
         UIBackgroundModes:
           - audio
-        # The personal media server is reached over plain HTTP on the LAN or a
-        # Tailscale (100.x) address, so allow non-TLS loads. This is a personal
-        # single-user app; tighten to specific NSExceptionDomains once the
-        # server has a stable https origin.
-        NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
-          NSAllowsLocalNetworking: true
+        # Standalone on-device library: no network calls at all, so no ATS
+        # exception is needed anymore.
+        #
+        # Make the app's Documents directory show up as "On My iPhone ->
+        # Musicbox" in the Files app, so the user can drag audio files (e.g.
+        # from VLC's library) straight into it. LocalLibraryService scans
+        # Documents recursively and the in-app Import button
+        # (UIDocumentPickerViewController) copies files there too.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         # Avoids the App Store "export compliance" prompt for a personal build.
         ITSAppUsesNonExemptEncryption: false
-    # NOTE ON DATA PROTECTION: the library cache + downloaded media are written
+    # NOTE ON DATA PROTECTION: the library index + cached artwork are written
     # with .completeFileProtectionUntilFirstUserAuthentication in code (see
-    # LibraryStore / AudioPlayer) so they are encrypted at rest but still
-    # readable for background audio after the first unlock. If you prefer to
-    # enforce it target-wide instead, add the "Data Protection" capability and
-    # set it there.
+    # LocalLibraryService / AudioPlayer) so they are encrypted at rest but
+    # still readable for background audio after the first unlock. If you
+    # prefer to enforce it target-wide instead, add the "Data Protection"
+    # capability and set it there.

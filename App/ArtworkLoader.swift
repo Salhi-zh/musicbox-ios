@@ -11,54 +11,38 @@ private struct SendableImage: @unchecked Sendable {
     let image: UIImage
 }
 
-/// Loads album art via `GET /v1/art/{uuid}?size=200`, downsampling with
-/// ImageIO (`CGImageSourceCreateThumbnailAtIndex`) rather than
-/// `UIImage(data:)` so we never hold a full-resolution decode in memory, and
-/// caches the results in a small in-memory `NSCache`.
+/// Loads album art from the LOCAL cache written by `LocalLibraryService`
+/// (a downsized JPEG per track uuid), downsampling with ImageIO rather than
+/// `UIImage(data:)` so we never hold a full-resolution decode in memory. Results
+/// are cached in a small in-memory `NSCache`.
 @MainActor
 final class ArtworkLoader: ObservableObject {
-    /// Point size we ask the server for; the request tops out at the 200px art.
-    private let requestSize = 200
-    /// Pixel ceiling for the downsample (≈2x for Retina crispness at 100pt).
     private let maxPixelSize: CGFloat = 200
-
-    private let settings: SettingsStore
-    private let session: URLSession
+    private let library: LocalLibraryService
     private let cache: NSCache<NSUUID, UIImage> = {
         let c = NSCache<NSUUID, UIImage>()
         c.countLimit = 300
         return c
     }()
 
-    init(settings: SettingsStore, session: URLSession = .shared) {
-        self.settings = settings
-        self.session = session
+    init(library: LocalLibraryService) {
+        self.library = library
     }
 
     func cachedImage(for uuid: UUID) -> UIImage? {
         cache.object(forKey: uuid as NSUUID)
     }
 
-    /// Returns a downsampled thumbnail for `uuid`, or `nil` if unavailable.
+    /// Returns a downsampled thumbnail for `uuid`, or `nil` if the track has no art.
     func image(for uuid: UUID) async -> UIImage? {
         if let cached = cache.object(forKey: uuid as NSUUID) { return cached }
-        guard let config = settings.config,
-              let request = MusicboxAPI.artRequest(for: uuid, size: requestSize, config: config)
-        else { return nil }
-
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-            guard let image = await Self.downsample(data, maxPixelSize: maxPixelSize) else { return nil }
-            cache.setObject(image, forKey: uuid as NSUUID)
-            return image
-        } catch {
-            return nil
-        }
+        guard let url = library.artworkURL(for: uuid),
+              let data = try? Data(contentsOf: url) else { return nil }
+        guard let image = await Self.downsample(data, maxPixelSize: maxPixelSize) else { return nil }
+        cache.setObject(image, forKey: uuid as NSUUID)
+        return image
     }
 
-    /// Downsamples off the main actor. ImageIO decodes straight to the target
-    /// pixel size, so the full-size bitmap is never realized.
     private static func downsample(_ data: Data, maxPixelSize: CGFloat) async -> UIImage? {
         await Task.detached(priority: .utility) { () -> SendableImage? in
             let options: [CFString: Any] = [
