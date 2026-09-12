@@ -20,7 +20,7 @@ struct SearchView: View {
                     noMatches
                 } else {
                     List(results) { row in
-                        TrackRowView(row: row)
+                        TrackRowView(row: row, context: results.map(\.track))
                     }
                     .listStyle(.plain)
                 }

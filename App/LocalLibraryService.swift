@@ -28,8 +28,15 @@ final class LocalLibraryService: ObservableObject {
     private var entries: [Entry] = []
     private var urlByUUID: [UUID: URL] = [:]
 
+    /// Every format we ship must be indexed, even if `AVFoundation` can't
+    /// actually decode it on-device: an invisible file is a worse bug than a
+    /// clear playback error. Opus-in-Ogg (`opus`/`ogg`) is not guaranteed to
+    /// load/tag-read via `AVAudioFile`/`AVURLAsset` on iOS — the shipped phone
+    /// library is AAC `.m4a`, which works fully. When Opus decode fails,
+    /// `AudioPlayer` surfaces it through `lastError` rather than crashing or
+    /// silently doing nothing.
     private static let audioExtensions: Set<String> =
-        ["mp3", "m4a", "aac", "wav", "aif", "aiff", "caf", "flac", "alac", "mp4"]
+        ["mp3", "m4a", "aac", "wav", "aif", "aiff", "caf", "flac", "alac", "mp4", "opus", "ogg"]
 
     struct Entry: Codable {
         var track: Track

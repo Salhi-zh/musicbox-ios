@@ -16,7 +16,7 @@ struct LibraryView: View {
                     emptyState
                 } else {
                     List(library.rows) { row in
-                        TrackRowView(row: row)
+                        TrackRowView(row: row, context: library.rows.map(\.track))
                     }
                     .listStyle(.plain)
                 }
