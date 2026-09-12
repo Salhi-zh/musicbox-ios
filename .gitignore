@@ -4,3 +4,9 @@
 .swiftpm/
 # xcodebuild archive/export output (testflight.yml -> build/*.xcarchive, build/export/*.ipa)
 build/
+# device tooling venv (pymobiledevice3) — 300MB+, never commit
+.tools-venv/
+# sideload packaging artifacts
+Payload/
+*.ipa
+DerivedData/
