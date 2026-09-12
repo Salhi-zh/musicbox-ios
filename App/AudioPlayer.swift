@@ -45,11 +45,13 @@ final class AudioPlayer: ObservableObject {
     private var seekBaseFrame: AVAudioFramePosition = 0
 
     /// Ticks ~1s while playing so the lock-screen scrubber tracks position.
-    private var elapsedTimer: Timer?
+    /// nonisolated(unsafe): only mutated on the main actor; deinit (nonisolated)
+    /// needs to invalidate/remove them, and by then no other reference exists.
+    nonisolated(unsafe) private var elapsedTimer: Timer?
 
-    private var interruptionObserver: NSObjectProtocol?
-    private var routeChangeObserver: NSObjectProtocol?
-    private var mediaResetObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var interruptionObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var routeChangeObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var mediaResetObserver: NSObjectProtocol?
 
     init(library: LocalLibraryService) {
         self.library = library
@@ -299,7 +301,12 @@ final class AudioPlayer: ObservableObject {
             object: session,
             queue: nil
         ) { [weak self] note in
-            Task { @MainActor in self?.handleInterruption(note) }
+            // Extract Sendable primitives here (nonisolated) so no non-Sendable
+            // Notification crosses into the @MainActor task.
+            let info = note.userInfo
+            let typeValue = info?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let optionsValue = info?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            Task { @MainActor in self?.handleInterruption(typeValue: typeValue, optionsValue: optionsValue) }
         }
 
         routeChangeObserver = center.addObserver(
@@ -307,7 +314,8 @@ final class AudioPlayer: ObservableObject {
             object: session,
             queue: nil
         ) { [weak self] note in
-            Task { @MainActor in self?.handleRouteChange(note) }
+            let reasonValue = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            Task { @MainActor in self?.handleRouteChange(reasonValue: reasonValue) }
         }
 
         mediaResetObserver = center.addObserver(
@@ -319,15 +327,13 @@ final class AudioPlayer: ObservableObject {
         }
     }
 
-    private func handleInterruption(_ note: Notification) {
-        guard let info = note.userInfo,
-              let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+    private func handleInterruption(typeValue: UInt?, optionsValue: UInt) {
+        guard let typeValue,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
         switch type {
         case .began:
             pause()
         case .ended:
-            let optionsValue = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
             if options.contains(.shouldResume) {
                 resume()
@@ -337,9 +343,8 @@ final class AudioPlayer: ObservableObject {
         }
     }
 
-    private func handleRouteChange(_ note: Notification) {
-        guard let info = note.userInfo,
-              let reasonValue = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+    private func handleRouteChange(reasonValue: UInt?) {
+        guard let reasonValue,
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
         // e.g. AirPods unplugged / disconnected — never keep blasting the
         // built-in speaker unexpectedly.
